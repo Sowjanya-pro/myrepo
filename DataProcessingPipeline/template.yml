@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AWS SAM application for processing a dataset, converting to Parquet,
+  partitioning, and enabling querying via Athena.
+
+Parameters:
+  DownloadLambdaName:
+    Type: String
+    Description: Name of the Lambda function for downloading files
+  ExtractLambdaName:
+    Type: String
+    Description: Name of the Lambda function for extracting zip files
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: sourcedata032025
+
+  DownloadfilesfromS3:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref DownloadLambdaName
+      Handler: downloadfilesfroms3.lambda_handler
+      Runtime: python3.11
+      CodeUri: fetch_file/
+      MemorySize: 1000
+      Timeout: 600
+      Policies:
+        - AmazonS3FullAccess
+        - AWSLambdaBasicExecutionRole
+      Environment:
+        Variables:
+          BUCKET_NAME: sourcedata032025
+          URL: https://eforexcel.com/wp/wp-content/uploads/2020/09/2m-Sales-Records.zip
+
+  extractzipfiles:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref ExtractLambdaName
+      Handler: extractzipfiles.lambda_handler
+      Runtime: python3.11
+      CodeUri: process_file/
+      MemorySize: 1000
+      Timeout: 780
+      Layers:
+        - arn:aws:lambda:us-east-2:336392948345:layer:AWSSDKPandas-Python311:20
+      Policies:
+        - AmazonS3FullAccess
+        - AWSLambdaBasicExecutionRole
+      Environment:
+        Variables:
+          BUCKET_NAME: sourcedata032025
+      Events:
+        S3Upload:
+          Type: S3
+          Properties:
+            Bucket:
+              Ref: DataBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: raw-data/
+                  - Name: suffix
+                    Value: .csv
+
+  SequentialFlowStepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      Name: SequentialFlowStepFunction
+      DefinitionString: !Sub |
+        {
+          "StartAt": "${DownloadLambdaName}",
+          "States": {
+            "${DownloadLambdaName}": {
+              "Type": "Task",
+              "Resource": "${DownloadfilesfromS3.Arn}",
+              "Next": "${ExtractLambdaName}"
+            },
+            "${ExtractLambdaName}": {
+              "Type": "Task",
+              "Resource": "${extractzipfiles.Arn}",
+              "End": true
+            }
+          }
+        }
+      RoleArn: arn:aws:iam::535002896640:role/StepFunctionLambdaRole
+
+  GlueCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: sales-data-crawler
+      Role: arn:aws:iam::535002896640:role/service-role/AWSGlueServiceRole-sales-data-crawler-iam-role
+      DatabaseName: sales_db
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${DataBucket}/partitioned_data/"
+
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: Primary
+      Description: WorkGroup for processing sales data via Athena
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${DataBucket}/query_data/"
+
+Outputs:
+  BucketName:
+    Description: Name of the S3 bucket created
+    Value: !Ref DataBucket
+  StepFunctionArn:
+    Description: ARN of the Step Function
+    Value: !Ref SequentialFlowStepFunction
+  AthenaWorkGroupName:
+    Description: Name of the Athena WorkGroup
+    Value: !Ref AthenaWorkGroup
