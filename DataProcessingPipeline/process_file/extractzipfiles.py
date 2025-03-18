@@ -52,7 +52,7 @@ def lambda_handler(event, context):
                     parquet_buffer.seek(0)
                     
                     # Define S3 path for partitioned data
-                    parquet_key = f"partitioned-data/country={country}/data.parquet"
+                    parquet_key = f"partitioned-data/country_partition={country}/data.parquet"
                     
                     # Upload Parquet file directly to S3
                     print(f"Uploading Parquet to: s3://{BUCKET_NAME}/{parquet_key}")
